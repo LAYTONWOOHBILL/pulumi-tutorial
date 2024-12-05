@@ -8,6 +8,8 @@ config = pulumi.Config()
 frontend_port = config.require_int("frontendPort")
 backend_port = config.require_int("backendPort")
 mongo_port = config.require_int("mongoPort")
+mongo_username = config.require("mongoUsername")
+mongo_password = config.require_secret("mongoPassword")
 
 mongo_host = config.require("mongoHost") # Note that strings are the default, so it's not `config.require_str`, just `config.require`.
 database = config.require("database")
@@ -47,23 +49,35 @@ mongo_container = docker.Container(
     networks_advanced=[
         docker.ContainerNetworksAdvancedArgs(name=network.name, aliases=["mongo"])
     ],
+    envs=[
+        f"MONGO_INITDB_ROOT_USERNAME={mongo_username}",
+        mongo_password.apply(lambda password: f"MONGO_INITDB_ROOT_PASSWORD={password}"),
+    ],
 )
 
 # Create the backend container
 backend_container = docker.Container(
     "backend_container",
-    name=f"backend-{stack}",
     image=backend.repo_digest,
+    name=f"backend-{stack}",
     ports=[docker.ContainerPortArgs(internal=backend_port, external=backend_port)],
     envs=[
-        f"DATABASE_HOST={mongo_host}",
-        f"DATABASE_NAME={database}",
+        pulumi.Output.concat(
+            "DATABASE_HOST=mongodb://",
+            mongo_username,
+            ":",
+            mongo_password,
+            "@",
+            mongo_host,
+            ":",
+            f"{mongo_port}",
+        ),  # Changed!
+        f"DATABASE_NAME={database}?authSource=admin",  # Also changed!
         f"NODE_ENV={node_environment}",
     ],
     networks_advanced=[docker.ContainerNetworksAdvancedArgs(name=network.name)],
     opts=pulumi.ResourceOptions(depends_on=[mongo_container]),
 )
-
 # Create the frontend container
 frontend_container = docker.Container(
     "frontend_container",
@@ -77,3 +91,6 @@ frontend_container = docker.Container(
     ],
     networks_advanced=[docker.ContainerNetworksAdvancedArgs(name=network.name)],
 )
+
+pulumi.export("url", pulumi.Output.format("http://localhost:{0}", frontend_port))
+pulumi.export("mongoPassword", mongo_password)
